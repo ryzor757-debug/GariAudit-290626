@@ -12,6 +12,7 @@ import AdminPortal from './components/AdminPortal';
 import Footer from './components/Footer';
 import { TRANSLATIONS } from './data';
 import { Compass, ShieldX, CheckSquare, UserCheck, Languages, Download, Layers } from 'lucide-react';
+import { getGigs, createGig, updateGigStatus } from './supabaseClient';
 
 export default function App() {
   const [lang, setLang] = useState<'en' | 'bn'>('en');
@@ -19,52 +20,31 @@ export default function App() {
 
   // Gigs and jobs central state
   const [gigs, setGigs] = useState<Gig[]>([]);
+  const [supabaseLoading, setSupabaseLoading] = useState<boolean>(true);
 
-  // Seed default posted gigs
+  // Load from Supabase (or localStorage fallback) on mount
+  const reloadData = async () => {
+    try {
+      const fetched = await getGigs();
+      setGigs(fetched);
+    } catch (e) {
+      console.error('Failed to reload gigs', e);
+    } finally {
+      setSupabaseLoading(false);
+    }
+  };
+
   useEffect(() => {
-    // Populate seed audit requests
-    const initialGigs: Gig[] = [
-      {
-        id: 'gig_001',
-        requesterUserId: 'usr_buyer_1',
-        assetType: 'CAR',
-        status: 'POSTED',
-        scheduledStart: '2026-05-30T10:00:00Z',
-        scheduledEnd: '2026-05-30T12:00:00Z',
-        locationText: 'Dhaka - Tejgaon',
-        locationLat: 23.7592,
-        locationLng: 90.3995,
-        priceAmount: 5000,
-        currency: 'BDT',
-        notes: 'Toyota Premio FEX শোরুম (Baridhara Link Road branch)',
-        createdAt: '2026-05-29T11:00:00Z',
-        updatedAt: '2026-05-29T11:00:00Z'
-      },
-      {
-        id: 'gig_002',
-        requesterUserId: 'usr_buyer_2',
-        assetType: 'CAR',
-        status: 'POSTED',
-        scheduledStart: '2026-05-31T14:00:00Z',
-        scheduledEnd: '2026-05-31T16:00:00Z',
-        locationText: 'Chattogram - GEC',
-        locationLat: 22.3591,
-        locationLng: 91.8219,
-        priceAmount: 5000,
-        currency: 'BDT',
-        notes: 'Honda Vezel RS (Inspecting inside workshop with lift access availability)',
-        createdAt: '2026-05-29T11:15:00Z',
-        updatedAt: '2026-05-29T11:15:00Z'
-      }
-    ];
-
-    setGigs(initialGigs);
+    reloadData();
+    // Live update poller every 5 seconds for interactive collab feeling
+    const interval = setInterval(reloadData, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   const pushLog = (..._args: any[]) => {};
 
-  // 1. Buyerbooks inspection workflow
-  const handleBookInspection = (data: {
+  // 1. Buyer books inspection workflow - hooks directly into Supabase OR fallback
+  const handleBookInspection = async (data: {
     assetType: 'CAR'|'EV'|'SCOOTER';
     vehicleModel: string;
     plateNumber: string;
@@ -75,7 +55,8 @@ export default function App() {
     walletNo: string;
   }) => {
     const newId = 'gig_' + Math.floor(Math.random() * 900000 + 100000);
-    const newGig: Gig = {
+    
+    await createGig({
       id: newId,
       requesterUserId: 'usr_buyer_active',
       assetType: data.assetType,
@@ -87,190 +68,116 @@ export default function App() {
       locationLng: 90.3912,
       priceAmount: 5000,
       currency: 'BDT',
-      notes: `${data.vehicleModel} - ${data.plateNumber} (${data.notes || ''})`,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
+      notes: data.notes || '',
+      vehicleModel: data.vehicleModel,
+      plateNumber: data.plateNumber,
+      walletNo: data.walletNo,
+      txId: data.txId,
+      answers: null
+    } as any);
 
-    setGigs(prev => [newGig, ...prev]);
+    await reloadData();
 
-    // Push Developer Logs
+    // Push Developer Logs for simulation audits
     pushLog(
       'API_REQUEST',
       'POST /gigs (Idempotent booking request)',
       `HEADERS:
   Authorization: Bearer jwt_p9285...
-  Idempotency-Key: ${Math.random().toString(36).substring(2, 11).toUpperCase()}
+  X-Supabase-Status: CONNECTED
 
 BODY:
 {
+  "id": "${newId}",
   "asset_type": "${data.assetType}",
   "location_text": "${data.locationText}",
-  "price_amount": 5000.00,
-  "currency": "BDT",
-  "notes": "${data.vehicleModel} - Plate ${data.plateNumber}"
+  "vehicle_model": "${data.vehicleModel}",
+  "plate_number": "${data.plateNumber}",
+  "tx_id": "${data.txId}"
 }`
-    );
-
-    pushLog(
-      'SQL_STATEMENT',
-      'Transaction Insert: gigs & initial status event logs',
-      `BEGIN;
-
-INSERT INTO gigs (id, requester_user_id, asset_type, status, location_text, price_amount)
-VALUES ('${newId}', 'usr_buyer_active', '${data.assetType}', 'POSTED', '${data.locationText}', 5000.00);
-
-INSERT INTO gig_status_events (gig_id, from_status, to_status, changed_by_user_id, change_source)
-VALUES ('${newId}', NULL, 'POSTED', 'usr_buyer_active', 'REQUESTER_APP');
-
-INSERT INTO payments (gig_id, method, amount, status, tx_id)
-VALUES ('${newId}', 'WALLET_TX', 500.00, 'PENDING', '${data.txId}');
-
-COMMIT;`
-    );
-
-    pushLog(
-      'HEX_PORT',
-      'Port Trigger: GigService::create_gig',
-      `// Invoking input driver port on our domain service.
-let service = GigServiceImpl::new(gig_repository, user_repository);
-let gig_dto = service.create_gig(CreateGigCommand {
-    requester_id: "usr_buyer_active",
-    asset_type: AssetType::Car,
-    location: "${data.locationText}",
-    wallet_provider: "bKash"
-}).await?;`
     );
   };
 
   // 2. Auditor claims gig workflow
-  const handleClaimGig = (gigId: string) => {
-    setGigs(prev => prev.map(g => g.id === gigId ? { ...g, status: 'ACCEPTED' } : g));
-
-    const targetGig = gigs.find(g => g.id === gigId);
-    const location = targetGig ? targetGig.locationText : 'Dhaka Tejgaon';
+  const handleClaimGig = async (gigId: string) => {
+    // Picked by standard auditor
+    await updateGigStatus(gigId, 'ACCEPTED', {
+      auditorUserId: 'usr_auditor_7890'
+    });
+    
+    await reloadData();
 
     pushLog(
       'API_REQUEST',
       `POST /gigs/${gigId}/accept (Claim available inspection)`,
       `HEADERS:
   Authorization: Bearer jwt_auditor_7890
-  Idempotency-Key: CLAIM-${gigId.substring(4)}
 
 RESPONSE (200 OK):
 {
-  "job_id": "job_${gigId.substring(4)}",
   "gig_id": "${gigId}",
   "auditor_user_id": "usr_auditor_7890",
   "status": "ACCEPTED"
 }`
     );
-
-    pushLog(
-      'SQL_STATEMENT',
-      'Race-Condition Safe SELECT FOR UPDATE transaction lock',
-      `BEGIN;
-
--- SELECT FOR UPDATE grabs an exclusive row lock on this gig, preventing any downstream double auditor assignment races!
-SELECT status FROM gigs WHERE id = '${gigId}' FOR UPDATE;
-
--- Backend code validates if status is indeed still 'POSTED' inside transaction. If yes, proceed:
-UPDATE gigs SET status = 'ACCEPTED' WHERE id = '${gigId}';
-
-INSERT INTO jobs (id, gig_id, auditor_user_id, job_status)
-VALUES ('job_${gigId.substring(4)}', '${gigId}', 'usr_auditor_7890', 'ACCEPTED')
-ON CONFLICT (gig_id) DO NOTHING; -- Strict Database invariant protection check
-
-INSERT INTO gig_status_events (gig_id, from_status, to_status, changed_by_user_id, change_source)
-VALUES ('${gigId}', 'POSTED', 'ACCEPTED', 'usr_auditor_7890', 'AUDITOR_APP');
-
-COMMIT;`
-    );
-
-    pushLog(
-      'HEX_PORT',
-      'Hexagonal Drive Port: GigService::accept_gig',
-      `// Restricting double audit accepts via Domain Engine model.
-let locked_gig = postgres_gig_repo.lock_for_acceptance(gig_id).await?;
-if locked_gig.status != GigStatus::Posted {
-    return Err(DomainError::GigAlreadyAccepted);
-}`
-    );
   };
 
   // 3. Auditor submits checklist workflow
-  const handleAuditSubmit = (gigId: string, answers: any) => {
-    setGigs(prev => prev.map(g => g.id === gigId ? { ...g, status: 'SUBMITTED' } : g));
+  const handleAuditSubmit = async (gigId: string, answers: any) => {
+    await updateGigStatus(gigId, 'SUBMITTED', {
+      answers
+    });
+    
+    await reloadData();
 
     pushLog(
       'API_REQUEST',
       `POST /jobs/job_${gigId.substring(4)}/audit/submit`,
-      `HEADERS:
-  Authorization: Bearer jwt_auditor_7890
-
-BODY:
+      `BODY:
 {
-  "answers": [
-    { "key": "chassis_salvage", "value_bool": ${answers.chassis_salvage || false} },
-    { "key": "corrosion_underbody", "value_text": "${answers.corrosion_underbody || 'None'}" },
-    { "key": "obd2_cleared_recent", "value_bool": ${answers.obd2_cleared_recent || false} },
-    { "key": "odometer_rollback", "value_bool": ${answers.odometer_rollback || false} }
-  ],
-  "local_id": "local_offline_stack_${gigId.substring(4)}"
+  "answers": ${JSON.stringify(answers, null, 2)}
 }`
-    );
-
-    pushLog(
-      'SQL_STATEMENT',
-      'Insert Audits Answers & Submit Lock rules',
-      `BEGIN;
-
-INSERT INTO audits (id, job_id, template_id, status, local_id)
-VALUES ('aud_${gigId.substring(4)}', 'job_${gigId.substring(4)}', 'tpl_car_v1', 'SUBMITTED', 'local_offline_stack_${gigId.substring(4)}');
-
--- Locking answer states to prevent fraud or post-audit tempering
-INSERT INTO audit_answers (audit_id, template_item_id, value_bool, value_text)
-VALUES 
-  ('aud_${gigId.substring(4)}', 't1', ${answers.chassis_salvage || false}, NULL),
-  ('aud_${gigId.substring(4)}', 't2', NULL, '${answers.corrosion_underbody || 'None'}');
-
-UPDATE gigs SET status = 'SUBMITTED' WHERE id = '${gigId}';
-UPDATE jobs SET job_status = 'SUBMITTED', submitted_at = NOW() WHERE gig_id = '${gigId}';
-
-COMMIT;`
     );
   };
 
   // 4. Admin releases report to buyer
-  const handleReleaseReport = (gigId: string) => {
-    setGigs(prev => prev.map(g => g.id === gigId ? { ...g, status: 'COMPLETED' } : g));
+  const handleReleaseReport = async (gigId: string) => {
+    // Generate a beautiful verified report score and outline summary
+    const originalGig = gigs.find(g => g.id === gigId);
+    const answers = (originalGig as any)?.answers || {};
+    
+    // Calculate a fitness score based on audit checklist
+    let score = 95;
+    if (answers.chassis_salvage === true || answers.chassis_salvage === 'true') score -= 35;
+    if (answers.odometer_rollback === true || answers.odometer_rollback === 'true') score -= 25;
+    if (answers.obd2_cleared_recent === true || answers.obd2_cleared_recent === 'true') score -= 15;
+    if (answers.corrosion_underbody === 'Structural Rot') score -= 20;
+    else if (answers.corrosion_underbody === 'Surface Rust') score -= 10;
+    if (score < 20) score = 20;
+
+    let overallStatus: 'OK' | 'WARNING' | 'CRITICAL' = 'OK';
+    if (score < 60) overallStatus = 'CRITICAL';
+    else if (score < 85) overallStatus = 'WARNING';
+
+    const summaryText = `Fully evaluated ${originalGig?.vehicleModel || 'vehicle'}. ` +
+      (score < 60 
+        ? 'CRITICAL structure issues and safety alerts logged. Severe restoration required.' 
+        : score < 85 
+          ? 'Passed basic safety tests, but warnings are logged regarding OBD2 clear-outs or coastal rust. Buyer caution advised.' 
+          : 'Outstanding physical fitness score. Engine compression optimal and chassis rails solid.');
+
+    await updateGigStatus(gigId, 'COMPLETED', {
+      reportScore: score,
+      reportStatus: overallStatus,
+      reportSummary: summaryText
+    });
+
+    await reloadData();
 
     pushLog(
       'API_REQUEST',
       `POST /reports/rep_${gigId.substring(4)}/release`,
-      `RESPONSE (200 OK):
-{
-  "report_id": "rep_${gigId.substring(4)}",
-  "share_token": "TOK32_${Math.random().toString(36).substring(2, 15).toUpperCase()}...",
-  "unaltered_hash_md5": "HASH_84f2913b8..."
-}`
-    );
-
-    pushLog(
-      'SQL_STATEMENT',
-      'Compile Immutable Report Summary Row',
-      `BEGIN;
-
-INSERT INTO reports (id, audit_id, overall_status, score, summary)
-VALUES ('rep_${gigId.substring(4)}', 'aud_${gigId.substring(4)}', 'WARNING', 85, 'Fully evaluated Toyota premium Sedan. Clear of chassis welds. Active ABS buzzer requires immediate warning.');
-
-INSERT INTO report_shares (report_id, share_token, is_active)
-VALUES ('rep_${gigId.substring(4)}', 'TOK32_${Math.random().toString(36).substring(2, 17).toUpperCase()}', true);
-
-UPDATE gigs SET status = 'COMPLETED' WHERE id = '${gigId}';
-UPDATE jobs SET job_status = 'COMPLETED', completed_at = NOW() WHERE gig_id = '${gigId}';
-
-COMMIT;`
+      `STATUS COMPLETED. Score: ${score}, Status: ${overallStatus}`
     );
   };
 
@@ -280,7 +187,7 @@ COMMIT;`
       'SQL_STATEMENT',
       `Verify Mechanic KYC profile status`,
       `UPDATE auditor_profiles
-SET verification_status = 'VERIFIED', verification_level = 'PRO', updated_at = NOW()
+SET verification_status = 'VERIFIED'
 WHERE user_id = '${id}';`
     );
   };
@@ -408,7 +315,6 @@ WHERE user_id = '${id}';`
             onPushLog={pushLog}
           />
         )}
-... (92 lines remaining)
 
         {activeTab === 'auditor' && (
           <AuditorPortal 

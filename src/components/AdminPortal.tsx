@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 import { TRANSLATIONS } from '../data';
@@ -23,8 +23,14 @@ import {
   TrendingUp,
   BarChart3,
   Activity,
-  Plus
+  Plus,
+  Database,
+  Copy,
+  Server,
+  RefreshCw,
+  Sliders
 } from 'lucide-react';
+import { SUPABASE_SQL_SCHEMA } from '../supabaseClient';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -50,6 +56,70 @@ interface AdminPortalProps {
 
 export default function AdminPortal({ lang, gigs, onApproveAuditor, onReleaseReport }: AdminPortalProps) {
   const text = TRANSLATIONS[lang];
+
+  // Database Live Status Diagnostics
+  const [dbStatus, setDbStatus] = useState<any>(null);
+  const [dbLoading, setDbLoading] = useState<boolean>(true);
+  const [seedLoading, setSeedLoading] = useState<boolean>(false);
+  const [seedMessage, setSeedMessage] = useState<string>('');
+  const [sqlCopied, setSqlCopied] = useState<boolean>(false);
+
+  const fetchDbStatus = async () => {
+    try {
+      setDbLoading(true);
+      const res = await fetch('/api/supabase-status');
+      if (res.ok) {
+        const data = await res.json();
+        setDbStatus(data);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setDbStatus({
+          configured: false,
+          error: errData.error || 'Server returned non-OK status'
+        });
+      }
+    } catch (e: any) {
+      setDbStatus({
+        configured: false,
+        error: e.message || 'Network exception'
+      });
+    } finally {
+      setDbLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDbStatus();
+  }, []);
+
+  const handleRunSeeding = async () => {
+    try {
+      setSeedLoading(true);
+      setSeedMessage('');
+      const res = await fetch('/api/supabase-seed', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setSeedMessage(data.message);
+        fetchDbStatus(); // Refresh row counts
+      } else {
+        setSeedMessage('Failed: ' + (data.error || 'Make sure your tables exist first by executing the schema script in Supabase SQL editor.'));
+      }
+    } catch (err: any) {
+      setSeedMessage('Network error: ' + err.message);
+    } finally {
+      setSeedLoading(false);
+    }
+  };
+
+  const handleCopySql = () => {
+    try {
+      navigator.clipboard.writeText(SUPABASE_SQL_SCHEMA);
+      setSqlCopied(true);
+      setTimeout(() => setSqlCopied(false), 3000);
+    } catch (e) {
+      console.error('Failed to copy', e);
+    }
+  };
 
   // Operational Overview Data (Interactive)
   const [operationalData, setOperationalData] = useState([
@@ -214,9 +284,13 @@ export default function AdminPortal({ lang, gigs, onApproveAuditor, onReleaseRep
     setDownloading(true);
     const originalGetComputedStyle = window.getComputedStyle;
     
+    // Capture style tags to temporarily strip oklch color functions which html2canvas parser trips on
+    const styleTags = Array.from(document.querySelectorAll('style'));
+    const originalStyleContentsByTag = new Map<HTMLStyleElement, string>();
+    
     try {
       const colorCache = new Map<string, string>();
-      const convertOklchToRgb = (colorStr: string): string => {
+      const convertOklchToRgbVal = (colorStr: string): string => {
         if (typeof colorStr !== 'string' || !colorStr.includes('oklch')) {
           return colorStr;
         }
@@ -224,22 +298,36 @@ export default function AdminPortal({ lang, gigs, onApproveAuditor, onReleaseRep
           return colorCache.get(colorStr)!;
         }
         
-        const oklchRegex = /oklch\([^)]+\)/g;
-        const result = colorStr.replace(oklchRegex, (match) => {
+        const oklchRegex = /oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+))?\s*\)/g;
+        const result = colorStr.replace(oklchRegex, (match, l, c, h, opacity) => {
           try {
-            const canvas = document.createElement('canvas');
-            canvas.width = 1;
-            canvas.height = 1;
-            const ctx = canvas.getContext('2d');
-            if (!ctx) return 'rgb(128, 128, 128)';
-            ctx.fillStyle = match;
-            ctx.fillRect(0, 0, 1, 1);
-            const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
-            if (a === 255) {
-              return `rgb(${r}, ${g}, ${b})`;
-            } else {
-              return `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(3)})`;
+            const hNum = parseFloat(h);
+            const lNum = parseFloat(l);
+            // Color mapping to retain the vivid editorial feel of GariAudit inside the static PDF
+            if (hNum >= 40 && hNum <= 90) {
+              // Warm / Amber / Orange / Gold tags
+              return opacity ? `rgba(245, 158, 11, ${opacity})` : `rgb(245, 158, 11)`;
             }
+            if (hNum >= 120 && hNum <= 180) {
+              // Emerald / Green indicators
+              return opacity ? `rgba(16, 185, 129, ${opacity})` : `rgb(16, 185, 129)`;
+            }
+            if (hNum >= 200 && hNum <= 280) {
+              // Blue / Indigo / Dark Slate elements
+              if (lNum < 0.3) {
+                return opacity ? `rgba(15, 23, 42, ${opacity})` : `rgb(15, 23, 42)`;
+              }
+              return opacity ? `rgba(59, 130, 246, ${opacity})` : `rgb(59, 130, 246)`;
+            }
+            if (lNum > 0.9) {
+              // Soft backgrounds & off-whites
+              return opacity ? `rgba(248, 250, 252, ${opacity})` : `rgb(248, 250, 252)`;
+            }
+            if (lNum < 0.2) {
+              // High contrast deep grays
+              return opacity ? `rgba(15, 23, 42, ${opacity})` : `rgb(15, 23, 42)`;
+            }
+            return opacity ? `rgba(100, 116, 139, ${opacity})` : `rgb(100, 116, 139)`;
           } catch (e) {
             return 'rgb(128, 128, 128)';
           }
@@ -248,6 +336,15 @@ export default function AdminPortal({ lang, gigs, onApproveAuditor, onReleaseRep
         colorCache.set(colorStr, result);
         return result;
       };
+
+      // Rewrite oklch in all active style elements
+      styleTags.forEach(tag => {
+        const content = tag.textContent || '';
+        originalStyleContentsByTag.set(tag, content);
+        if (content.includes('oklch')) {
+          tag.textContent = convertOklchToRgbVal(content);
+        }
+      });
 
       window.getComputedStyle = (el, pseudoElt) => {
         const style = originalGetComputedStyle(el, pseudoElt);
@@ -258,13 +355,13 @@ export default function AdminPortal({ lang, gigs, onApproveAuditor, onReleaseRep
               if (prop === 'getPropertyValue') {
                 return (propertyName: string) => {
                   const val = target.getPropertyValue(propertyName);
-                  return typeof val === 'string' ? convertOklchToRgb(val) : val;
+                  return typeof val === 'string' ? convertOklchToRgbVal(val) : val;
                 };
               }
               return value.bind(target);
             }
             if (typeof prop === 'string' && typeof value === 'string') {
-              return convertOklchToRgb(value);
+              return convertOklchToRgbVal(value);
             }
             return value;
           }
@@ -306,10 +403,15 @@ export default function AdminPortal({ lang, gigs, onApproveAuditor, onReleaseRep
       console.error('PDF Engine error:', err);
       alert('Critical Error occurred while compiling the PDF layout.');
     } finally {
+      // Revert style content to restore beautiful oklch styles on the parent screen immediately
+      originalStyleContentsByTag.forEach((content, tag) => {
+        tag.textContent = content;
+      });
       window.getComputedStyle = originalGetComputedStyle;
       setDownloading(false);
     }
   };
+
 
   const handleVerify = (id: string, name: string) => {
     setAuditors(prev => prev.map(a => a.id === id ? { ...a, status: 'VERIFIED' } : a));
@@ -353,8 +455,198 @@ export default function AdminPortal({ lang, gigs, onApproveAuditor, onReleaseRep
           </div>
         </div>
 
+        {/* --- SUPABASE DATABASE AND STORAGE CONNECTION MONITOR (DIAGNOSTICS & SETUP HELP) --- */}
+        <div className="bg-white p-8 border border-black/10 space-y-6 animate-fade-in" id="supabase-status-and-diagnostics font-serif">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-black/10 font-serif">
+            <div className="flex items-center gap-3">
+              <Database className="h-5 w-5 text-rose-500 shrink-0 font-serif" />
+              <div>
+                <span className="text-[9px] font-sans font-bold uppercase tracking-widest text-[#1a1a1a] block font-serif">
+                  {lang === 'en' ? 'Database & Schema Verification Services' : 'ডাটাবেজ ও স্কিমা ভেরিফিকেশন সার্ভিস'}
+                </span>
+                <h2 className="font-serif text-lg font-light text-[#1a1a1a] mt-0.5">
+                  {lang === 'en' ? 'Supabase Backend Storage Monitor' : 'সুপাবেস ব্যাকএন্ড স্টোরেজ মনিটর'}
+                </h2>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={fetchDbStatus}
+              disabled={dbLoading}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-black/10 text-[10px] font-sans font-bold uppercase tracking-wider hover:bg-black/5 transition cursor-pointer font-serif"
+            >
+              <RefreshCw className={`h-3 w-3 ${dbLoading ? 'animate-spin' : ''}`} />
+              {lang === 'en' ? 'Check Connection' : 'কানেকশন চেক'}
+            </button>
+          </div>
+
+          {dbLoading ? (
+            <div className="py-6 flex items-center justify-center gap-2 font-serif">
+              <RefreshCw className="h-4 w-4 animate-spin text-rose-500" />
+              <span className="text-[11px] font-mono tracking-widest uppercase">Pinging Supabase REST Engine...</span>
+            </div>
+          ) : !dbStatus || !dbStatus.configured ? (
+            <div className="bg-amber-50/70 p-6 border border-amber-200 space-y-3 font-serif">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <h4 className="text-xs font-bold text-amber-900 font-sans uppercase tracking-[0.05em]">
+                    {lang === 'en' ? 'SUPABASE CONFIGURATION DISCONNECTED' : 'সুপাবেস কনফিগারেশন ডিসকানেক্টেড'}
+                  </h4>
+                  <p className="text-xs text-amber-800 font-serif leading-relaxed">
+                    {lang === 'en' 
+                      ? 'The server backend cannot locate your SUPABASE_URL or SUPABASE_ANON_KEY inside the environment or Project Secrets. The application has successfully initialized the fail-safe localStorage Fallback mode.'
+                      : 'সার্ভার ব্যাকএন্ড আপনার SUPABASE_URL অথবা SUPABASE_ANON_KEY খুঁজে পায়নি। নিরাপত্তা সুরক্ষায় অ্যাপ্লিকেশনটি লোকাল স্টোরেজ মোডে চালু হয়েছে।'}
+                  </p>
+                  {dbStatus?.error && (
+                    <div className="bg-white/75 p-3 rounded-sm text-[10px] font-mono text-rose-700 border border-rose-100 overflow-x-auto mt-2">
+                      Error Details: {dbStatus.error}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="text-[11px] text-[#554c3e] pl-8 font-serif leading-relaxed">
+                <p className="font-bold underline">How to Configure Secrets:</p>
+                <ol className="list-decimal pl-4 space-y-1 mt-1">
+                  <li>Click on the <strong>Settings</strong> button or the <strong>Secrets API Keys Manager</strong> in your AI Studio dashboard.</li>
+                  <li>Define two Secrets: <code className="font-mono bg-white px-1 py-0.5 text-black">SUPABASE_URL</code> and <code className="font-mono bg-white px-1 py-0.5 text-black">SUPABASE_ANON_KEY</code>.</li>
+                  <li>Save them to authorize server-side connection immediately.</li>
+                </ol>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6 font-serif text-[#161616]">
+              {/* Connection Success Indicator */}
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-6 bg-emerald-50/40 p-6 border border-emerald-100 items-start">
+                <div className="md:col-span-4 space-y-2">
+                  <div className="flex items-center gap-1.5 text-emerald-800 font-sans font-bold uppercase text-[9px] tracking-widest">
+                    <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span>ONLINE ● INTEGRATION ACTIVE</span>
+                  </div>
+                  <h3 className="text-md font-serif text-slate-900 font-medium">{lang === 'en' ? 'Active Handshake Established' : 'সক্রিয় কানেকশন স্থাপিত'}</h3>
+                  <p className="text-[11px] text-gray-500 font-serif leading-relaxed">
+                    {lang === 'en' 
+                      ? 'The Node server is proxying requests to Supabase securely. Client API keys are completely hidden inside server environment.'
+                      : 'নোড ব্যাকএন্ড সফলভাবে নিরাপদ উপায়ে সুপাবেস এপিআই হ্যান্ডশেক সম্পন্ন করেছে। এপিআই কী ব্রাউজারে দেখতে পাওয়া যাবে না।'}
+                  </p>
+                  <div className="pt-2 text-[10px] font-mono text-gray-400">
+                    Host: <span className="text-[#101828] font-bold">{dbStatus.url}</span>
+                  </div>
+                </div>
+
+                {/* Table Schema Grid Checker */}
+                <div className="md:col-span-8 space-y-3 font-sans">
+                  <span className="block text-[9px] font-sans font-bold text-gray-400 uppercase tracking-widest">
+                    {lang === 'en' ? 'DATABASE TABLE ACCESS REPORT' : 'ডাটাবেজ টেবিল রেজিস্ট্রি রিপোর্ট'}
+                  </span>
+                  
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {Object.entries(dbStatus.tables || {}).map(([tableName, s]: any) => (
+                      <div key={tableName} className="bg-[#fcfcfc] p-3.5 border border-black/10 flex flex-col justify-between h-[105px]">
+                        <div className="flex justify-between items-start gap-1">
+                          <span className="font-mono text-[10.5px] font-bold text-gray-900 truncate" title={tableName}>
+                            {tableName}
+                          </span>
+                          <span className={`px-1.5 py-0.5 text-[8px] font-sans font-bold rounded-sm uppercase ${
+                            s.exists 
+                              ? 'bg-emerald-100 text-emerald-800' 
+                              : 'bg-rose-100 text-rose-800 animate-pulse'
+                          }`}>
+                            {s.exists ? 'Active' : 'Missing'}
+                          </span>
+                        </div>
+                        
+                        <div className="mt-2 flex justify-between items-baseline">
+                          <span className="text-[10px] text-gray-400">Rows:</span>
+                          <span className="font-mono text-xs font-semibold text-slate-800">
+                            {s.exists ? s.rows : '—'}
+                          </span>
+                        </div>
+
+                        {!s.exists && (
+                          <div className="text-[7.5px] text-rose-500 font-sans tracking-tight font-bold whitespace-nowrap overflow-hidden text-ellipsis mt-1">
+                            Missing database schema table!
+                          </div>
+                        )}
+                        {s.exists && s.rows === 0 && (
+                          <div className="text-[7.5px] text-amber-600 font-sans tracking-tight mt-1">
+                            Empty database table.
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Buttons for Seeding and Copying schema */}
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-5 bg-[#fbfbfb] border border-black/5">
+                <div className="space-y-1">
+                  <h4 className="text-xs font-bold text-slate-900 font-sans uppercase tracking-[0.05em]">
+                    {lang === 'en' ? 'DATABASE SEED AND SCHEMAS COMMAND' : 'ডাটাবেজ ডেমো ডাটা এবং স্কিমা কমান্ড'}
+                  </h4>
+                  <p className="text-[11px] text-gray-400 font-serif leading-relaxed">
+                    {lang === 'en' 
+                      ? 'If some tables are marked as "Missing", run the SQL schema initialization block below in your Supabase dashboard SQL Editor. If tables are active but empty, pre-seed sample audits.'
+                      : 'যদি কোনো টেবিল "Missing" দেখায়, নিচে দেওয়া লকিং এসকিউএল স্ক্রিপ্টটি সুপাবেস ড্যাশবোর্ডে গিয়ে রান করুন।'}
+                  </p>
+                </div>
+
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleCopySql}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 border border-black text-[10.5px] font-sans font-bold uppercase tracking-wider hover:bg-black hover:text-white transition cursor-pointer"
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                    {sqlCopied ? (lang === 'en' ? 'COPIED!' : 'কপি হয়েছে!') : (lang === 'en' ? 'COPY SCHEMA SQL' : 'কপি স্কিমা SQL')}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleRunSeeding}
+                    disabled={seedLoading}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 bg-black text-white hover:bg-neutral-850 text-[10.5px] font-sans font-bold uppercase tracking-wider transition cursor-pointer disabled:opacity-50"
+                  >
+                    <Sliders className={`h-3.5 w-3.5 ${seedLoading ? 'animate-spin' : ''}`} />
+                    {lang === 'en' ? 'SEED SAMPLE DATA' : 'ডেমো ডাটা প্রিপপুলেট'}
+                  </button>
+                </div>
+              </div>
+
+              {seedMessage && (
+                <div className="bg-rose-50 border border-rose-100 p-4 font-mono text-[11px] text-rose-800 whitespace-pre-wrap animate-fade-in">
+                  Status Code Msg: {seedMessage}
+                </div>
+              )}
+
+              {/* Expandable Manual Instructions schema */}
+              <details className="group border border-black/10 bg-[#fbfbfb] p-4 text-xs font-sans cursor-pointer">
+                <summary className="flex items-center justify-between font-bold uppercase tracking-wider select-none">
+                  <span>How to Paste the SQL Schema into Supabase? Click to read guide</span>
+                  <span className="text-gray-400 group-open:rotate-180 transition">↓</span>
+                </summary>
+                
+                <div className="mt-4 space-y-3 font-serif cursor-default text-gray-700 leading-relaxed max-w-4xl pl-4 border-l border-black/10">
+                  <p>Follow these quick, easy steps to create the necessary tables in your Supabase dashboard:</p>
+                  <ol className="list-decimal pl-4 space-y-2 font-serif text-[12.5px]">
+                    <li>Open your <a href="https://supabase.com/dashboard" target="_blank" referrerPolicy="no-referrer" className="text-rose-600 underline font-semibold">Supabase Dashboard</a>.</li>
+                    <li>Select the exact project you mapped to your app secrets.</li>
+                    <li>Look at the left-most sidebar navigation rail and click on the <strong>SQL Editor</strong> icon (it looks like a terminal document with <code className="font-mono bg-black text-white px-1">SQL</code>).</li>
+                    <li>Click <strong>New Query</strong> at the top.</li>
+                    <li>Click the <strong>"COPY SCHEMA SQL"</strong> button above, then paste the clipboard content directly into the query editor workspace in Supabase.</li>
+                    <li>Click the <strong>Run</strong> button in the bottom right of the Supabase SQL editor.</li>
+                    <li>All six tables and operational series data will immediately render successfully. Come back here and click <strong>Check Connection</strong>!</li>
+                  </ol>
+                </div>
+              </details>
+            </div>
+          )}
+        </div>
+
         {/* --- HIGH-LEVEL OPERATIONAL OVERVIEW DASHBOARD (RECHARTS) --- */}
-        <div className="bg-white p-8 border border-black/10 space-y-6" id="admin-operational-analytics">
+        <div className="bg-white p-8 border border-black/10 space-y-6 animate-fade-in" id="admin-operational-analytics">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-black/10">
             <div className="flex items-center gap-2.5">
               <BarChart3 className="h-5 w-5 text-black shrink-0" />

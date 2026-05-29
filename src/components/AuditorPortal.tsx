@@ -6,6 +6,7 @@
 import React, { useState } from 'react';
 import { TRANSLATIONS, CAR_INSPECTION_TEMPLATE } from '../data';
 import { Gig } from '../types';
+import { createAuditorCashout } from '../supabaseClient';
 import { 
   Smartphone, 
   LayoutGrid, 
@@ -158,8 +159,23 @@ export default function AuditorPortal({ lang, gigs, onClaimGig, onSubmitAudit, o
     setCashoutStatus('PROCESSING');
     
     // Simulate API Delay
-    setTimeout(() => {
+    setTimeout(async () => {
       const generatedTxId = 'TXN_' + Math.floor(Math.random() * 9000000 + 1000000);
+      const payoutId = 'pay_' + Math.random().toString(36).substring(4);
+
+      try {
+        await createAuditorCashout({
+          id: payoutId,
+          amount: amount,
+          wallet_no: cashoutWallet,
+          gateway: cashoutGateway,
+          status: 'DISBURSED',
+          tx_id: generatedTxId
+        });
+      } catch (err) {
+        console.error('Error recording payout to Supabase:', err);
+      }
+
       setCashoutTxId(generatedTxId);
       setCashoutStatus('SUCCESS');
 
@@ -171,13 +187,16 @@ export default function AuditorPortal({ lang, gigs, onClaimGig, onSubmitAudit, o
           `HEADERS:
   Authorization: Bearer jwt_auditor_7890
   Content-Type: application/json
+  Database: Supabase Connected
 
 BODY:
 {
+  "pay_id": "${payoutId}",
   "auditor_id": "usr_auditor_7890",
   "disbursal_amount_bdt": ${amount}.00,
   "gateway_carrier": "${cashoutGateway}",
-  "destination_wallet_no": "${cashoutWallet}"
+  "destination_wallet_no": "${cashoutWallet}",
+  "tx_id": "${generatedTxId}"
 }`
         );
 
@@ -197,15 +216,14 @@ SET verified_balance_bdt = verified_balance_bdt - ${amount}.00,
 WHERE auditor_id = 'usr_auditor_7890';
 
 -- Insert transaction payout history logs
-INSERT INTO wallet_payout_history (id, auditor_id, amount_bdt, gateway, phone_no, status, reference_txid)
-VALUES ('pay_${Math.random().toString(36).substring(4)}', 'usr_auditor_7890', ${amount}.00, '${cashoutGateway}', '${cashoutWallet}', 'DISBURSED', '${generatedTxId}');
+INSERT INTO auditor_cashouts (id, amount, wallet_no, gateway, status, tx_id)
+VALUES ('${payoutId}', ${amount}.00, '${cashoutWallet}', '${cashoutGateway}', 'DISBURSED', '${generatedTxId}');
 
 COMMIT;`
         );
       }
     }, 1500);
   };
-
   // Diagnostic Quiz Questions
   const quizQuestions = [
     {

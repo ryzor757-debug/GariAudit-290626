@@ -3,8 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { TRANSLATIONS, POPULAR_VEHICLES, BANGLADESH_REGIONS } from '../data';
+import { 
+  getDisputeMessages, 
+  createDisputeMessage, 
+  createMaintenanceBooking,
+  isSupabaseConfigured
+} from '../supabaseClient';
 import { Gig } from '../types';
 import { 
   Calendar, 
@@ -80,58 +86,101 @@ export default function BuyerPortal({ lang, gigs, onBookInspection, onPushLog }:
     senderName: string;
     text: string;
     timestamp: string;
-  }>>>({
-    rep_allion: [
-      {
-        id: 'init_allion_1',
-        sender: 'admin',
-        senderName: lang === 'en' ? 'Administrative Tech Lead' : 'প্রধান কারিগরি নিরীক্ষক',
-        text: lang === 'en' 
-          ? 'Greeting, Auditor Desk here. I see your report highlights Odometer mileage manipulation from 142k km to 54k km. Do you wish to file a secure dispute claim and request a double physical audit?' 
-          : 'নমস্কার, অডিটর ডেস্ক থেকে বলছি। আপনার রিপোর্টে ওডোমিটার কারচুপির প্রমাণ পাওয়া গিয়েছে। আপনি কি পুনরায় ফিজিক্যাল নিরীক্ষার জন্য অভিযোগ দায়ের করতে চান?',
-        timestamp: '12:44 UTC'
-      }
-    ],
-    rep_premio_hybrid: [
-      {
-        id: 'init_premio_1',
-        sender: 'admin',
-        senderName: lang === 'en' ? 'Senior Compliance Expert' : 'সিনিয়র কমপ্লায়েন্স কর্মকর্তা',
-        text: lang === 'en'
-          ? 'Hello. This JDM Premio has scored an impressive 94/100. Feel free to contact our administration desk with any questions or findings you notice.'
-          : 'আসসালামু আলাইকুম। এই জেডিএম প্রিমিও-টি ৯৪/১০০ স্কোর পেয়েছে। আপনার কোনো বিষয় নিয়ে অভিযোগ বা সংশয় থাকলে এখানে আমাদের সাথে লাইভ মতামত শেয়ার করতে পারেন।',
-        timestamp: '11:32 UTC'
-      }
-    ],
-    rep_vezel_rs: [
-      {
-        id: 'init_vezel_1',
-        sender: 'admin',
-        senderName: lang === 'en' ? 'Warranty Underwriter' : 'ওয়ারেন্টি নিরীক্ষক',
-        text: lang === 'en'
-          ? 'Alert! A critical dual-clutch transmission leakage was logged for this Honda Vezel RS. We highly advise against buying from the current broker without fixing this. Do you want to submit pre-purchase dispute findings to their agency?'
-          : 'সতর্কতা! এই হোন্ডা ভিজেলের ডুয়াল-ক্লাচ গিয়ারবক্স তরল লিক হচ্ছে। আপনি কি ব্রোকার বা ডিলারের কাছে অফিশিয়াল রিপোর্ট রি-ভেরিফিকেশন কপি পাঠাতে চান?',
-        timestamp: '09:12 UTC'
-      }
-    ],
-  });
+  }>>>({});
 
-  const handleSendDisputeMessage = (customText?: string) => {
+  // Real-time Supabase Dispute Message Loader polling
+  const loadMessages = async () => {
+    try {
+      const msgs = await getDisputeMessages(activeReportId);
+      if (msgs && msgs.length > 0) {
+        setDisputeMessages(prev => ({
+          ...prev,
+          [activeReportId]: msgs.map(m => ({
+            id: m.id,
+            sender: m.sender,
+            senderName: m.sender_name,
+            text: m.text,
+            timestamp: m.timestamp
+          }))
+        }));
+      } else {
+        // Hydrate default chat questions
+        const defaultMsg = activeReportId === 'rep_allion' ? [
+          {
+            id: 'init_allion_1',
+            sender: 'admin' as const,
+            senderName: lang === 'en' ? 'Administrative Tech Lead' : 'প্রধান কারিগরি নিরীক্ষক',
+            text: lang === 'en' 
+              ? 'Greeting, Auditor Desk here. I see your report highlights Odometer mileage manipulation from 142k km to 54k km. Do you wish to file a secure dispute claim and request a double physical audit?' 
+              : 'নমস্কার, অডিটর ডেস্ক থেকে বলছি। আপনার রিপোর্টে ওডোমিটার কারচুপির প্রমাণ পাওয়া গিয়েছে। আপনি কি পুনরায় ফিজিক্যাল নিরীক্ষার জন্য অভিযোগ দায়ের করতে চান?',
+            timestamp: '12:44 UTC'
+          }
+        ] : activeReportId === 'rep_premio_hybrid' ? [
+          {
+            id: 'init_premio_1',
+            sender: 'admin' as const,
+            senderName: lang === 'en' ? 'Senior Compliance Expert' : 'সিনিয়র কমপ্লায়েন্স কর্মকর্তা',
+            text: lang === 'en'
+              ? 'Hello. This JDM Premio has scored an impressive 94/100. Feel free to contact our administration desk with any questions or findings you notice.'
+              : 'আসসালামু আলাইকুম। এই জেডিএম প্রিমিও-টি ৯৪/১০০ স্কোর পেয়েছে। আপনার কোনো বিষয় নিয়ে অভিযোগ বা সংশয় থাকলে এখানে আমাদের সাথে লাইভ মতামত শেয়ার করতে পারেন।',
+            timestamp: '11:44 UTC'
+          }
+        ] : [
+          {
+            id: 'init_vezel_1',
+            sender: 'admin' as const,
+            senderName: lang === 'en' ? 'Warranty Underwriter' : 'ওয়ারেন্টি নিরীক্ষক',
+            text: lang === 'en'
+              ? 'Alert! A critical dual-clutch transmission leakage was logged for this Honda Vezel RS. We highly advise against buying from the current broker without fixing this. Do you want to submit pre-purchase dispute findings to their agency?'
+              : 'সতর্কতা! এই হোন্ডা ভিজেলের ডুয়াল-ক্লাচ গিয়ারবক্স তরল লিক হচ্ছে। আপনি কি ব্রোকার বা ডিলারের কাছে অফিশিয়াল রিপোর্ট রি-ভেরিফিকেশন কপি পাঠাতে চান?',
+            timestamp: '09:12 UTC'
+          }
+        ];
+        
+        setDisputeMessages(prev => ({
+          ...prev,
+          [activeReportId]: defaultMsg
+        }));
+      }
+    } catch (e) {
+      console.error('Failed to load live dispute messages', e);
+    }
+  };
+
+  useEffect(() => {
+    loadMessages();
+    const interval = setInterval(loadMessages, 4000);
+    return () => clearInterval(interval);
+  }, [activeReportId, lang]);
+
+  const handleSendDisputeMessage = async (customText?: string) => {
     const textToSend = customText || newMessageText;
     if (!textToSend.trim()) return;
 
-    const buyerMessageId = 'b_msg_' + Math.random().toString(36).substring(4);
-    const newMsg = {
+    const buyerMessageId = 'b_msg_' + Math.floor(Math.random() * 900000 + 100000);
+    const timestampStr = new Date().toLocaleTimeString(lang === 'bn' ? 'bn-BD' : 'en-US', { hour: '2-digit', minute: '2-digit' }) + ' ' + (lang === 'en' ? 'Local' : 'স্থায়ী');
+
+    const newMsgObj = {
       id: buyerMessageId,
+      report_id: activeReportId,
       sender: 'buyer' as const,
-      senderName: lang === 'en' ? 'Asset Buyer' : 'ক্রেতা অ্যাকাউন্ট',
+      sender_name: lang === 'en' ? 'Asset Buyer' : 'ক্রেতা অ্যাকাউন্ট',
       text: textToSend,
-      timestamp: new Date().toLocaleTimeString(lang === 'bn' ? 'bn-BD' : 'en-US', { hour: '2-digit', minute: '2-digit' }) + ' ' + (lang === 'en' ? 'Local' : 'স্থায়ী')
+      timestamp: timestampStr
     };
+
+    // Save to database
+    await createDisputeMessage(newMsgObj);
 
     setDisputeMessages(prev => ({
       ...prev,
-      [activeReportId]: [...(prev[activeReportId] || []), newMsg]
+      [activeReportId]: [...(prev[activeReportId] || []), {
+        id: buyerMessageId,
+        sender: 'buyer',
+        senderName: newMsgObj.sender_name,
+        text: textToSend,
+        timestamp: timestampStr
+      }]
     }));
 
     if (!customText) {
@@ -147,26 +196,26 @@ export default function BuyerPortal({ lang, gigs, onBookInspection, onPushLog }:
         `HEADERS:
   Authorization: Bearer jwt_buyer_3491
   Content-Type: application/json
+  Database: Supabase Connected
 
 BODY:
 {
   "client_id": "usr_buyer_1204",
-  "dispute_type": "REPORT_FINDINGS_INQUIRY",
-  "comment_text": "${textToSend.replace(/"/g, '\\"')}",
-  "timestamp": "${new Date().toISOString()}"
+  "report_id": "${activeReportId}",
+  "comment_text": "${textToSend.replace(/"/g, '\\"')}"
 }`
       );
     }
 
-    setTimeout(() => {
+    setTimeout(async () => {
       setTypingState(false);
-      const adminMessageId = 'a_msg_' + Math.random().toString(36).substring(4);
+      const adminMessageId = 'a_msg_' + Math.floor(Math.random() * 900000 + 100000);
       
       let adminReplyText = '';
       if (activeReportId === 'rep_allion') {
         const replies = [
           lang === 'en'
-            ? "Compliance Board has logged your concerns. We have flagged the odometer tamper logs in our centralized hub and notified the regional JDM registry. Double evaluation of the Allion's speedometer chips can be scheduled during garage overhaul."
+            ? "Compliance Board has logged your concerns. We have flagged the odometer tamper logs in our centralized hub and notified the regional JDM registry. Double evaluation of the Allion's speedometer chips can be scheduled during garage overhauls."
             : "আমাদের কমপ্লায়েন্স বোর্ড অভিযোগটি নথিভুক্ত করেছে। আমরা ওডোমিটার কারচুপির প্রমাণ ডিস্ট্রিবিউটেড লগে মার্ক করে রেখেছি। মেকানিকের সাথে পুনরায় চেক করতে চাইলে ওয়ার্কশপ ভিজিট সিডিউল করুন।",
           lang === 'en'
             ? "Understood. The EEPROM counter's physical modification footprint is mathematically confirmed. We will draft an official inspection certified discrepancy letter for you to present to the seller."
@@ -195,28 +244,36 @@ BODY:
         adminReplyText = replies[Math.floor(Math.random() * replies.length)];
       }
 
-      const adminMsg = {
+      const adminMsgObj = {
         id: adminMessageId,
+        report_id: activeReportId,
         sender: 'admin' as const,
-        senderName: lang === 'en' ? 'Administrative Auditor' : 'অফিশিয়াল নিরীক্ষক',
+        sender_name: lang === 'en' ? 'Administrative Auditor' : 'অফিশিয়াল নিরীক্ষক',
         text: adminReplyText,
         timestamp: new Date().toLocaleTimeString(lang === 'bn' ? 'bn-BD' : 'en-US', { hour: '2-digit', minute: '2-digit' }) + ' ' + (lang === 'en' ? 'Local' : 'স্থায়ী')
       };
 
+      await createDisputeMessage(adminMsgObj);
+
       setDisputeMessages(prev => ({
         ...prev,
-        [activeReportId]: [...(prev[activeReportId] || []), adminMsg]
+        [activeReportId]: [...(prev[activeReportId] || []), {
+          id: adminMessageId,
+          sender: 'admin',
+          senderName: adminMsgObj.sender_name,
+          text: adminReplyText,
+          timestamp: adminMsgObj.timestamp
+        }]
       }));
 
       if (onPushLog) {
         onPushLog(
           'API_RESPONSE',
           `RECEIVE /api/disputes/ticket-update?report_id=${activeReportId}`,
-          `STATUS: 200 OK
+          `STATUS: 200 OK (Supabase Synced Reply)
 BODY:
 {
   "ticket_id": "tkt_disp_${activeReportId.substring(4)}",
-  "resolver_assigned": "admin_audit_mgr",
   "reply_hash": "${adminMessageId}",
   "message": "${adminReplyText.replace(/"/g, '\\"')}"
 }`
@@ -272,64 +329,6 @@ BODY:
         cluster: 5000,
         total: 42000
       }
-    },
-    {
-      id: 'rep_premio_hybrid',
-      title: 'Toyota Premio FEX Hybrid',
-      plate: 'Dhaka Metro-HA-22-9430',
-      owner: 'Salma Parveen Begum',
-      cc: '1800 cc (Atkinson engine)',
-      year: 2019,
-      score: 94,
-      gradeCode: 'Score: 4.5 A (Excellent Condition)',
-      inspector: 'Kamrul Ahsan (ID: #4902)',
-      stampDate: '2026-05-28',
-      sealNo: 'SEAL #81206C',
-      hash: 'SHA256_902f3a47ce01bb',
-      statusMsg: lang === 'en' ? 'Exceptional JDM Unit - Recommended' : 'চমৎকার কন্ডিশন - ক্রয়ের জন্য উপযুক্ত',
-      tamperCheck: false,
-      hybridSoh: 88,
-      issues: [
-        { key: 'chassis', status: 'PASS', label: lang === 'en' ? 'Structure Integrity' : 'চেসিস কাঠামো', desc: lang === 'en' ? 'Completely untouched original factory JDM paint. 110 microns thickness over complete chassis framework.' : 'অরিজিনাল ফ্যাক্টরি পেইন্ট উপস্থিত আছে। পেইন্ট থিকনেস সর্বোচ্চ ১১০ মাইক্রন যা নিখুঁত।' },
-        { key: 'rust', status: 'PASS', label: lang === 'en' ? 'Underbody Rust Check' : 'আন্ডারবডি জং পরীক্ষা', desc: lang === 'en' ? 'Dry underbody. No corrosion tracks found near the wheelhouse splash plates.' : 'সম্পূর্ণ জংমুক্ত চমৎকার ড্রাই তলদেশ।' },
-        { key: 'hybrid', status: 'PASS', label: lang === 'en' ? 'Hybrid EV Intelligent Energy SoH' : 'হাইব্রিড ব্যাটারির স্বাস্থ্য পরীক্ষা', desc: lang === 'en' ? 'Battery pack is in premium condition. Internal resistance is 12mOhm per block. State of health verified at 88%.' : 'ব্যাটারি প্যাকের সামগ্রিক স্বাস্থ্য ৮৮%। ইন্টারনাল রেজিস্ট্যান্স ১২ মিলি-ওহম যা আদর্শ।' },
-        { key: 'odometer', status: 'PASS', label: lang === 'en' ? 'Log Book Integration (Odometer)' : 'প্রকৃত ওডোমিটার পরীক্ষা', desc: lang === 'en' ? 'Odometer log reads 32,450 km. Verified with JDM central database export statistics.' : '৩২,৪৫০ কিমি ওডোমিটার রিডিং সম্পূর্ণরূপে বাস্তব এবং অথেনটিক।' }
-      ],
-      costs: {
-        engine: 3000,
-        brake: 0,
-        cluster: 0,
-        total: 3000
-      }
-    },
-    {
-      id: 'rep_vezel_rs',
-      title: 'Honda Vezel RS Hybrid',
-      plate: 'Chatto Metro-GH-15-4012',
-      owner: 'Zahin Sadequzzaman',
-      cc: '1500 cc (i-DCD Dual Clutch)',
-      year: 2018,
-      score: 68,
-      gradeCode: 'Score: 3.0 C (Moderate - Caution Required)',
-      inspector: 'Ziaul Hoque (ID: #8230)',
-      stampDate: '2026-05-27',
-      sealNo: 'SEAL #14801X',
-      hash: 'MD5_011d4d38e21aa8',
-      statusMsg: lang === 'en' ? 'Critical Dual-Clutch Actuator Play Identified' : 'দ্বৈত ক্লাচ অ্যাকচুয়েটর লিকেজ চিহ্নিত',
-      tamperCheck: false,
-      hybridSoh: 62,
-      issues: [
-        { key: 'chassis', status: 'PASS', label: lang === 'en' ? 'Structural Welds' : 'গঠনগত জোড়াতালি পরীক্ষা', desc: lang === 'en' ? 'No damage found to radiator guides or core-support panels. Pure chassis framework.' : 'প্যানেলের চ্যাসিস ফ্রেম ও রেডিয়েটর মাউন্টিং অক্ষত আছে।' },
-        { key: 'clutch', status: 'FAIL', label: lang === 'en' ? 'Honda i-DCD Dual Clutch Actuation' : 'আই-ডিসডি ডুয়াল ক্লাচ পারফরমেন্স', desc: lang === 'en' ? 'Severe actuator fluid leakage. Rough transitions between octane engine and hybrid-electric generator. Repair critical!' : 'ডুয়াল ক্লাচ অ্যাকচুয়েটর তরল ফুটো হচ্ছে। দ্রুত সংস্কার প্রয়োজন নতুবা গিয়ারবক্স লক হতে পারে।' },
-        { key: 'hybrid', status: 'WARNING', label: lang === 'en' ? 'Lithium Battery Pack Health' : 'ব্যাটারি প্যাক ভোল্টেজ', desc: lang === 'en' ? 'Block 3 cell degradation detected. Average State of health is 62%. Block replace recommended soon.' : 'ব্লক ৩ সেল ক্ষয় পাওয়া গিয়েছে। সার্বিক স্বাস্থ্য ৬২%।' },
-        { key: 'brake', status: 'PASS', label: lang === 'en' ? 'Braking Response' : 'ব্রেকিং রেসপন্স', desc: lang === 'en' ? 'E-booster output within acceptable threshold.' : 'ই-ব্রেক অ্যাকচুয়েটর রেসপন্স সঠিক মাত্রায় বজায় আছে।' }
-      ],
-      costs: {
-        engine: 45000,
-        brake: 5000,
-        cluster: 0,
-        total: 50000
-      }
     }
   ];
 
@@ -342,7 +341,7 @@ BODY:
       return;
     }
 
-    const calculatedId = 'gig_' + Math.random().toString(36).substring(4);
+    const calculatedId = 'gig_' + Math.floor(Math.random() * 900000 + 100000);
     
     // Core callback
     onBookInspection({
@@ -501,12 +500,28 @@ log::info!("Assessed BDT Import Customs: ৳{}", estimation.total_duties_bdt);`
     return acc;
   }, 0);
 
-  const handleMaintenanceBooking = (e: React.FormEvent) => {
+  const handleMaintenanceBooking = async (e: React.FormEvent) => {
     e.preventDefault();
     setWorkshopBooked(true);
     setTimeout(() => {
       setWorkshopBooked(false);
     }, 6000);
+
+    const bookingId = 'ord_' + Math.floor(Math.random() * 900000 + 100000);
+
+    try {
+      await createMaintenanceBooking({
+        id: bookingId,
+        client_id: 'usr_buyer_1204',
+        workshop_handle: preferredWorkshop,
+        scheduled_repair_date: workshopDate,
+        selected_items: selectedRepairs,
+        estimated_cost: selectedRepairsSum,
+        status: 'SCHEDULED'
+      });
+    } catch (err) {
+      console.error('Error creating maintenance booking', err);
+    }
 
     if (onPushLog) {
       onPushLog(
@@ -515,9 +530,11 @@ log::info!("Assessed BDT Import Customs: ৳{}", estimation.total_duties_bdt);`
         `HEADERS:
   Authorization: Bearer jwt_buyer_3491
   Content-Type: application/json
+  Database: Supabase Connected
 
 BODY:
 {
+  "id": "${bookingId}",
   "client_id": "usr_buyer_1204",
   "workshop_handle": "${preferredWorkshop}",
   "scheduled_repair_date": "${workshopDate}",
@@ -529,10 +546,10 @@ BODY:
       onPushLog(
         'SQL_STATEMENT',
         'INSERT INTO workshop_work_orders & Dispatch Job Event',
-        `INSERT INTO workshop_work_orders (
-  id, client_id, selected_workshop, scheduled_date, repair_items_json, estimated_cost, status
+        `INSERT INTO maintenance_bookings (
+  id, client_id, workshop_handle, scheduled_repair_date, selected_items, estimated_cost, status
 ) VALUES (
-  'ord_${Math.random().toString(36).substring(4)}', 'usr_buyer_1204', '${preferredWorkshop}', '${workshopDate}', '${JSON.stringify(selectedRepairs)}', ${selectedRepairsSum}.00, 'SCHEDULED'
+  '${bookingId}', 'usr_buyer_1204', '${preferredWorkshop}', '${workshopDate}', '${JSON.stringify(selectedRepairs)}', ${selectedRepairsSum}.00, 'SCHEDULED'
 );`
       );
     }
